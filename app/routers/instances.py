@@ -13,7 +13,12 @@ router = APIRouter(prefix="/api/v1/instances", tags=["Instances"])
 
 class InstanceCreate(BaseModel):
     name: str
-    image: str = "ubuntu:22.04"
+    image: str = "ubuntu/22.04"
+    # Remote simplestreams server. Leave empty to use local image by alias.
+    # Common values:
+    #   "https://images.linuxcontainers.org"  (Incus/LXD community images)
+    #   "https://cloud-images.ubuntu.com/releases" (Ubuntu official)
+    image_server: Optional[str] = "https://images.linuxcontainers.org"
     instance_type: str = "container"  # "container" or "virtual-machine"
     profiles: List[str] = ["default"]
     config: Dict = {}
@@ -72,12 +77,26 @@ async def get_instance(request: Request, name: str, _=Depends(get_current_active
 @limiter.limit(settings.RATE_LIMIT_WRITE)
 async def create_instance(request: Request, data: InstanceCreate, _=Depends(get_current_active_user)):
     client = get_client()
-    config = {
-        "name": data.name,
-        "source": {
+
+    if data.image_server:
+        # Pull directly from a remote simplestreams server
+        source = {
+            "type": "image",
+            "mode": "pull",
+            "server": data.image_server,
+            "protocol": "simplestreams",
+            "alias": data.image,
+        }
+    else:
+        # Use a locally cached image by alias or fingerprint
+        source = {
             "type": "image",
             "alias": data.image,
-        },
+        }
+
+    config = {
+        "name": data.name,
+        "source": source,
         "profiles": data.profiles,
         "config": data.config,
         "type": data.instance_type,
