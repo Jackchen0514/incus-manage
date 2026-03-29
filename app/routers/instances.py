@@ -14,20 +14,37 @@ router = APIRouter(prefix="/api/v1/instances", tags=["Instances"])
 class InstanceCreate(BaseModel):
     name: str
     image: str = "ubuntu/22.04"
-    # Remote simplestreams server. Leave empty to use local image by alias.
-    # Common values:
-    #   "https://images.linuxcontainers.org"  (Incus/LXD community images)
-    #   "https://cloud-images.ubuntu.com/releases" (Ubuntu official)
     image_server: Optional[str] = "https://images.linuxcontainers.org"
     instance_type: str = "container"  # "container" or "virtual-machine"
     profiles: List[str] = ["default"]
     config: Dict = {}
+    auto_start: bool = True  # start the instance after creation
 
 
 class ExecCommand(BaseModel):
     command: List[str]
     environment: Dict = {}
     wait: bool = True
+
+
+def _wait_for_ip(inst, timeout: int = 30) -> Optional[str]:
+    """Poll instance state until an IPv4 address appears or timeout."""
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            state = inst.state()
+            network = state.network or {}
+            for iface, data in network.items():
+                if iface == "lo":
+                    continue
+                for addr in data.get("addresses", []):
+                    if addr.get("family") == "inet":
+                        return addr["address"]
+        except Exception:
+            pass
+        time.sleep(1)
+    return None
 
 
 def _instance_to_dict(inst) -> dict:
@@ -109,7 +126,20 @@ async def create_instance(request: Request, data: InstanceCreate, _=Depends(get_
     logger.info("Creating instance: name=%s image=%s server=%s", data.name, image_alias, data.image_server)
     try:
         inst = client.instances.create(config, wait=True)
-        return {"message": f"Instance '{data.name}' created", "name": inst.name, "status": inst.status}
+
+        if data.auto_start:
+            inst.start(wait=True)
+            # Wait up to 30s for an IPv4 address
+            ip = _wait_for_ip(inst, timeout=30)
+        else:
+            ip = None
+
+        return {
+            "message": f"Instance '{data.name}' created",
+            "name": inst.name,
+            "status": inst.status,
+            "ip": ip,
+        }
     except Exception as e:
         logger.error("Instance creation failed: %s | config=%s", e, config)
         raise HTTPException(status_code=400, detail=str(e))
@@ -223,6 +253,24 @@ async def get_instance_state(request: Request, name: str, _=Depends(get_current_
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{name}/ip", summary="Get instance IPv4 address (waits up to 30s)")
+@limiter.limit(settings.RATE_LIMIT_DEFAULT)
+async def get_instance_ip(request: Request, name: str, timeout: int = 30, _=Depends(get_current_active_user)):
+    client = get_client()
+    try:
+        inst = client.instances.get(name)
+        if inst.status != "Running":
+            raise HTTPException(status_code=400, detail=f"Instance '{name}' is not running (status: {inst.status})")
+        ip = _wait_for_ip(inst, timeout=min(timeout, 60))
+        if not ip:
+            raise HTTPException(status_code=504, detail="IP address not assigned within timeout")
+        return {"name": name, "ip": ip}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.patch("/{name}/config", summary="Update instance configuration")
