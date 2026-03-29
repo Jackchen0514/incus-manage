@@ -76,22 +76,26 @@ async def get_instance(request: Request, name: str, _=Depends(get_current_active
 @router.post("", status_code=201, summary="Create a new instance")
 @limiter.limit(settings.RATE_LIMIT_WRITE)
 async def create_instance(request: Request, data: InstanceCreate, _=Depends(get_current_active_user)):
+    import logging
+    logger = logging.getLogger("instances")
+
     client = get_client()
 
+    # Normalize image alias: "ubuntu:22.04" -> "ubuntu/22.04" for simplestreams
+    image_alias = data.image.replace(":", "/")
+
     if data.image_server:
-        # Pull directly from a remote simplestreams server
         source = {
             "type": "image",
             "mode": "pull",
             "server": data.image_server,
             "protocol": "simplestreams",
-            "alias": data.image,
+            "alias": image_alias,
         }
     else:
-        # Use a locally cached image by alias or fingerprint
         source = {
             "type": "image",
-            "alias": data.image,
+            "alias": image_alias,
         }
 
     config = {
@@ -101,10 +105,13 @@ async def create_instance(request: Request, data: InstanceCreate, _=Depends(get_
         "config": data.config,
         "type": data.instance_type,
     }
+
+    logger.info("Creating instance: name=%s image=%s server=%s", data.name, image_alias, data.image_server)
     try:
         inst = client.instances.create(config, wait=True)
         return {"message": f"Instance '{data.name}' created", "name": inst.name, "status": inst.status}
     except Exception as e:
+        logger.error("Instance creation failed: %s | config=%s", e, config)
         raise HTTPException(status_code=400, detail=str(e))
 
 
