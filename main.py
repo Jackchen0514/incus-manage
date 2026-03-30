@@ -87,18 +87,12 @@ async def health():
 
 
 # ── Routers (all mounted under secret PREFIX) ─────────────────────────────────
-def _r(router, old_prefix: str):
-    """Re-mount a router by replacing its /api/v1 prefix with PREFIX/api/v1."""
-    new_prefix = router.prefix.replace("/api/v1", f"{PREFIX}/api/v1", 1)
-    router.prefix = new_prefix
-    return router
-
-app.include_router(_r(auth.router,      "/api/v1/auth"))
-app.include_router(_r(instances.router, "/api/v1/instances"))
-app.include_router(_r(images.router,    "/api/v1/images"))
-app.include_router(_r(networks.router,  "/api/v1/networks"))
-app.include_router(_r(storage.router,   "/api/v1/storage"))
-app.include_router(_r(profiles.router,  "/api/v1/profiles"))
-app.include_router(_r(snapshots.router, "/api/v1/instances"))
-app.include_router(_r(system.router,    "/api/v1/system"))
-app.include_router(_r(proxy.router,     "/api/v1/instances"))
+app.include_router(auth.router,      prefix=PREFIX)
+app.include_router(instances.router, prefix=PREFIX)
+app.include_router(images.router,    prefix=PREFIX)
+app.include_router(networks.router,  prefix=PREFIX)
+app.include_router(storage.router,   prefix=PREFIX)
+app.include_router(profiles.router,  prefix=PREFIX)
+app.include_router(snapshots.router, prefix=PREFIX)
+app.include_router(system.router,    prefix=PREFIX)
+app.include_router(proxy.router,     prefix=PREFIX)
