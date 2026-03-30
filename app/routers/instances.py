@@ -19,8 +19,12 @@ class InstanceCreate(BaseModel):
     instance_type: str = "container"  # "container" or "virtual-machine"
     profiles: List[str] = ["default"]
     config: Dict = {}
+    devices: Dict = {}        # raw Incus devices, merged with bandwidth settings below
     auto_start: bool = True   # start the instance after creation
     setup_ssh: bool = False   # install openssh-server, set root password, add port forward
+    # Bandwidth limits (Mbit/s, 0 = unlimited)
+    bandwidth_ingress: int = 0
+    bandwidth_egress: int = 0
 
 
 class ExecCommand(BaseModel):
@@ -128,11 +132,22 @@ async def create_instance(request: Request, data: InstanceCreate, _=Depends(get_
             "alias": image_alias,
         }
 
+    # Build devices dict: start from user-supplied, then apply bandwidth limits
+    devices = dict(data.devices)
+    if data.bandwidth_ingress or data.bandwidth_egress:
+        eth0 = dict(devices.get("eth0", {"type": "nic", "nictype": "bridged", "parent": "incusbr0"}))
+        if data.bandwidth_ingress:
+            eth0["limits.ingress"] = f"{data.bandwidth_ingress}Mbit"
+        if data.bandwidth_egress:
+            eth0["limits.egress"] = f"{data.bandwidth_egress}Mbit"
+        devices["eth0"] = eth0
+
     config = {
         "name": data.name,
         "source": source,
         "profiles": data.profiles,
         "config": data.config,
+        "devices": devices,
         "type": data.instance_type,
     }
 
@@ -350,5 +365,59 @@ async def update_config(request: Request, name: str, config: dict, _=Depends(get
         inst.config.update(config)
         inst.save(wait=True)
         return {"message": "Config updated", "config": dict(inst.config)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── Bandwidth ─────────────────────────────────────────────────────────────────
+
+class BandwidthUpdate(BaseModel):
+    ingress: int = 0   # Mbit/s, 0 = unlimited
+    egress: int = 0    # Mbit/s, 0 = unlimited
+
+
+@router.get("/{name}/bandwidth", summary="Get current bandwidth limits for an instance")
+@limiter.limit(settings.RATE_LIMIT_DEFAULT)
+async def get_bandwidth(request: Request, name: str, _=Depends(get_current_active_user)):
+    client = get_client()
+    try:
+        inst = client.instances.get(name)
+        eth0 = inst.devices.get("eth0", {})
+        return {
+            "name": name,
+            "ingress": eth0.get("limits.ingress", "unlimited"),
+            "egress": eth0.get("limits.egress", "unlimited"),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.put("/{name}/bandwidth", summary="Set bandwidth limits for an instance (0 = unlimited)")
+@limiter.limit(settings.RATE_LIMIT_WRITE)
+async def set_bandwidth(request: Request, name: str, data: BandwidthUpdate, _=Depends(get_current_active_user)):
+    client = get_client()
+    try:
+        inst = client.instances.get(name)
+        eth0 = dict(inst.devices.get("eth0", {"type": "nic", "nictype": "bridged", "parent": "incusbr0"}))
+
+        if data.ingress:
+            eth0["limits.ingress"] = f"{data.ingress}Mbit"
+        else:
+            eth0.pop("limits.ingress", None)
+
+        if data.egress:
+            eth0["limits.egress"] = f"{data.egress}Mbit"
+        else:
+            eth0.pop("limits.egress", None)
+
+        inst.devices["eth0"] = eth0
+        inst.save(wait=True)
+
+        return {
+            "message": "Bandwidth limits updated",
+            "name": name,
+            "ingress": f"{data.ingress}Mbit" if data.ingress else "unlimited",
+            "egress": f"{data.egress}Mbit" if data.egress else "unlimited",
+        }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
