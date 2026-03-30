@@ -7,6 +7,7 @@ from app.core.security import get_current_active_user
 from app.core.limiter import limiter
 from app.core.config import settings
 from app.services.lxd_client import get_client
+from app.services.ssh_setup import generate_password, find_free_port, setup_ssh, add_ssh_proxy
 
 router = APIRouter(prefix="/api/v1/instances", tags=["Instances"])
 
@@ -18,13 +19,25 @@ class InstanceCreate(BaseModel):
     instance_type: str = "container"  # "container" or "virtual-machine"
     profiles: List[str] = ["default"]
     config: Dict = {}
-    auto_start: bool = True  # start the instance after creation
+    auto_start: bool = True   # start the instance after creation
+    setup_ssh: bool = False   # install openssh-server, set root password, add port forward
 
 
 class ExecCommand(BaseModel):
     command: List[str]
     environment: Dict = {}
     wait: bool = True
+
+
+def _get_host_ip() -> str:
+    """Return the host's primary public/private IP for SSH connection info."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
 
 
 def _wait_for_ip(inst, timeout: int = 30) -> Optional[str]:
@@ -127,19 +140,37 @@ async def create_instance(request: Request, data: InstanceCreate, _=Depends(get_
     try:
         inst = client.instances.create(config, wait=True)
 
+        ip = None
+        ssh_info = None
+
         if data.auto_start:
             inst.start(wait=True)
-            # Wait up to 30s for an IPv4 address
             ip = _wait_for_ip(inst, timeout=30)
-        else:
-            ip = None
+
+        if data.setup_ssh:
+            if not ip:
+                raise HTTPException(status_code=400, detail="Cannot setup SSH: instance has no IP (is it running?)")
+            password = generate_password()
+            host_port = find_free_port(client)
+            setup_ssh(inst, password)
+            add_ssh_proxy(inst, host_port, ip)
+            ssh_info = {
+                "host": _get_host_ip(),
+                "port": host_port,
+                "username": "root",
+                "password": password,
+            }
+            logger.info("SSH ready: instance=%s port=%d", data.name, host_port)
 
         return {
             "message": f"Instance '{data.name}' created",
             "name": inst.name,
             "status": inst.status,
             "ip": ip,
+            "ssh": ssh_info,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error("Instance creation failed: %s | config=%s", e, config)
         raise HTTPException(status_code=400, detail=str(e))
@@ -251,6 +282,43 @@ async def get_instance_state(request: Request, name: str, _=Depends(get_current_
             "pid": state.pid,
             "processes": state.processes,
         }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{name}/setup-ssh", summary="Install SSH, set root password, add port forward")
+@limiter.limit(settings.RATE_LIMIT_WRITE)
+async def setup_instance_ssh(request: Request, name: str, _=Depends(get_current_active_user)):
+    import logging
+    logger = logging.getLogger("instances")
+    client = get_client()
+    try:
+        inst = client.instances.get(name)
+        if inst.status != "Running":
+            raise HTTPException(status_code=400, detail=f"Instance must be running (current: {inst.status})")
+
+        ip = _wait_for_ip(inst, timeout=15)
+        if not ip:
+            raise HTTPException(status_code=504, detail="Could not determine instance IP")
+
+        password = generate_password()
+        host_port = find_free_port(client)
+        setup_ssh(inst, password)
+        add_ssh_proxy(inst, host_port, ip)
+
+        logger.info("SSH setup done: instance=%s port=%d", name, host_port)
+        return {
+            "name": name,
+            "ip": ip,
+            "ssh": {
+                "host": _get_host_ip(),
+                "port": host_port,
+                "username": "root",
+                "password": password,
+            },
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
