@@ -1,11 +1,16 @@
 #!/bin/bash
 # Start the Incus Manager API
 
-HOST=${HOST:-0.0.0.0}
+cd "$(dirname "$0")"
+
+# Load .env if present (skip comment lines and empty lines)
+if [ -f ".env" ]; then
+    export $(grep -v '^\s*#' .env | grep -v '^\s*$' | xargs)
+fi
+
+HOST=${HOST:-127.0.0.1}
 PORT=${PORT:-5000}
 WORKERS=${WORKERS:-1}
-
-cd "$(dirname "$0")"
 
 # Auto-setup venv if not present
 if [ ! -f ".venv/bin/uvicorn" ]; then
@@ -14,8 +19,7 @@ if [ ! -f ".venv/bin/uvicorn" ]; then
 fi
 
 echo "Starting Incus Manager API on http://$HOST:$PORT"
-echo "  Docs:  http://$HOST:$PORT/docs"
-echo "  ReDoc: http://$HOST:$PORT/redoc"
+echo "  (secret prefix and docs URL will print on startup)"
 echo ""
 
 .venv/bin/uvicorn main:app \
