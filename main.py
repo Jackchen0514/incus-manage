@@ -7,7 +7,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from app.core.config import settings
 from app.core.limiter import limiter
 from app.core.users import init_users
-from app.routers import auth, instances, images, networks, storage, profiles, snapshots, system
+from app.routers import auth, instances, images, networks, storage, profiles, snapshots, system, proxy
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -98,3 +98,4 @@ app.include_router(storage.router)
 app.include_router(profiles.router)
 app.include_router(snapshots.router)
 app.include_router(system.router)
+app.include_router(proxy.router)
