@@ -1,0 +1,16 @@
+[Unit]
+Description=Incus Manager API
+After=network.target incus.service
+Wants=incus.service
+
+[Service]
+Type=simple
+WorkingDirectory=/root/workspace/incus-manage
+ExecStart=/root/workspace/incus-manage/start.sh
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
