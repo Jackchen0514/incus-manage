@@ -79,7 +79,7 @@ async def add_proxy(request: Request, name: str, data: ProxyCreate, _=Depends(ge
                 detail="Instance has no IPv4 address — is it running?",
             )
 
-        device_name = data.device_name or f"proxy-{data.host_port}"
+        device_name = data.device_name or f"proxy-{data.protocol}-{data.host_port}"
 
         if device_name in inst.devices:
             raise HTTPException(
